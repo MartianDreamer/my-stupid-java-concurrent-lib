@@ -43,6 +43,25 @@ public class MultipleTaskThread extends Thread {
         return null;
     }
 
+    synchronized <T> CompletableFuture<T> submit(Callable<T> callable, CompletableFuture<T> completableFuture) {
+        if (this.terminated || !isAlive()) {
+            throw new IllegalStateException("MultipleReturnTaskThread terminated or not alive");
+        }
+        if (this.callable == null) {
+            this.callable = callable;
+            this.resultFuture = completableFuture;
+            return completableFuture;
+        }
+        return null;
+    }
+
+    synchronized CompletableFuture<Void> submit(Runnable task, CompletableFuture<Void> completableFuture) {
+        return submit(() -> {
+            task.run();
+            return null;
+        }, completableFuture);
+    }
+
     @SuppressWarnings("unchecked")
     @Override
     public void run() {

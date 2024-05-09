@@ -1,5 +1,6 @@
 package com.github.martiandreamer.concurrent;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -10,10 +11,27 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 public class MartianExecutorService implements ExecutorService {
 
-    private final ConcurrentLinkedQueue<Task<?>> tasks = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<CallableTask<?>> tasks = new ConcurrentLinkedQueue<>();
+
+    private final List<MultipleTaskThread> multipleTaskThreads = new ArrayList<>();
+
+    private MartianExecutorService() {
+    }
+
+    public static ExecutorService fixedPool(int numThreads) {
+        ArrayList<MultipleTaskThread> multipleTaskThreads = new ArrayList<>(numThreads);
+        MartianExecutorService executorService = new MartianExecutorService();
+        for (int i = 0; i < numThreads; i++) {
+            MultipleTaskThread thread = new MultipleTaskThread(executorService.tasks);
+            thread.start();
+            executorService.multipleTaskThreads.add(thread);
+        }
+        return executorService;
+    }
 
     @Override
     public void shutdown() {
@@ -42,63 +60,82 @@ public class MartianExecutorService implements ExecutorService {
 
     @Override
     public <T> Future<T> submit(Callable<T> task) {
-        Task<T> t = new Task<>(task);
+        CallableTask<T> t = new CallableTask<>(task);
         tasks.offer(t);
-        return t.future;
+        return t.getFuture();
     }
 
     @Override
     public <T> Future<T> submit(Runnable task, T result) {
-        RunnableTask runnableTask = new RunnableTask(task);
-        return CompletableFuture.completedFuture(result);
+        CallableTask<T> callableTask =  new CallableTask<>(() -> {
+            task.run();
+            return result;
+        });
+        tasks.offer(callableTask);
+        return callableTask.getFuture();
     }
 
     @Override
     public Future<?> submit(Runnable task) {
         RunnableTask runnableTask = new RunnableTask(task);
-        return runnableTask.future;
+        tasks.offer(runnableTask);
+        return runnableTask.getFuture();
     }
 
     @Override
     public <T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks) throws InterruptedException {
-        return List.of();
+        List<CallableTask<T>> callableTasks = tasks.stream()
+                .map(CallableTask::new)
+                .toList();
+        this.tasks.addAll(callableTasks);
+        return callableTasks.stream()
+                .map(CallableTask::getFuture)
+                .collect(Collectors.toList());
     }
 
     @Override
     public <T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks, long timeout, TimeUnit unit) throws InterruptedException {
-        return List.of();
+        List<CallableTask<T>> callableTasks = tasks.stream()
+                .map(e -> new CallableTask<T>(e, timeout, unit))
+                .toList();
+        this.tasks.addAll(callableTasks);
+        return callableTasks.stream()
+                .map(CallableTask::getFuture)
+                .collect(Collectors.toList());
     }
 
     @Override
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public <T> T invokeAny(Collection<? extends Callable<T>> tasks) throws InterruptedException, ExecutionException {
-        return null;
+        List<CallableTask<T>> callableTasks = tasks.stream()
+                .map(CallableTask::new)
+                .toList();
+        this.tasks.addAll(callableTasks);
+        CompletableFuture[] futures = callableTasks.stream()
+                .map(CallableTask::getFuture)
+                .toArray(CompletableFuture[]::new);
+        Object rs =  CompletableFuture.anyOf(futures).get();
+        this.tasks.removeAll(callableTasks);
+        return (T) rs;
     }
 
     @Override
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public <T> T invokeAny(Collection<? extends Callable<T>> tasks, long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-        return null;
+        List<CallableTask<T>> callableTasks = tasks.stream()
+                .map(e-> new CallableTask<T>(e, timeout, unit))
+                .toList();
+        this.tasks.addAll(callableTasks);
+        CompletableFuture[] futures = callableTasks.stream()
+                .map(CallableTask::getFuture)
+                .toArray(CompletableFuture[]::new);
+        Object rs =  CompletableFuture.anyOf(futures).get();
+        this.tasks.removeAll(callableTasks);
+        return (T) rs;
     }
 
     @Override
     public void execute(Runnable command) {
-
-    }
-
-    private static class Task<T> {
-        protected Callable<T> callable;
-        protected CompletableFuture<T> future;
-        protected Task(Callable<T> callable) {
-            this.callable = callable;
-            this.future = new CompletableFuture<>();
-        }
-    }
-
-    private static class RunnableTask extends Task<Void> {
-        protected RunnableTask(Runnable runnable) {
-            super(() -> {
-                runnable.run();
-                return null;
-            });
-        }
+        submit(command);
     }
 }

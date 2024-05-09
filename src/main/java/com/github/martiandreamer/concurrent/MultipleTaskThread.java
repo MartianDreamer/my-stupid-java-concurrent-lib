@@ -2,83 +2,56 @@ package com.github.martiandreamer.concurrent;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class MultipleTaskThread extends Thread {
-    @SuppressWarnings("rawtypes")
-    private Callable callable;
-    @SuppressWarnings("rawtypes")
-    private CompletableFuture resultFuture;
     private boolean terminated;
+    private final ConcurrentLinkedQueue<CallableTask<?>> taskQueue;
+
+    public MultipleTaskThread() {
+        this(new ConcurrentLinkedQueue<>());
+    }
+
+    MultipleTaskThread(ConcurrentLinkedQueue<CallableTask<?>> taskQueue) {
+        super();
+        this.taskQueue = taskQueue;
+    }
 
     public void terminate() {
         this.terminated = true;
     }
 
-    public synchronized <T> CompletableFuture<T> submit(Callable<T> callable) {
+    public <T> CompletableFuture<T> submit(Callable<T> callable) {
         if (this.terminated || !isAlive()) {
             throw new IllegalStateException("MultipleReturnTaskThread terminated or not alive");
         }
-        if (this.callable == null) {
-            this.callable = callable;
-            CompletableFuture<T> rs = new CompletableFuture<>();
-            this.resultFuture = rs;
-            return rs;
-        }
-        return null;
+        CallableTask<T> task = new CallableTask<>(callable);
+        taskQueue.offer(task);
+        return task.getFuture();
     }
 
-    public synchronized CompletableFuture<Void> submit(Runnable task) {
-        if (this.terminated || !isAlive()) {
-            throw new IllegalStateException("MultipleReturnTaskThread terminated or not alive");
-        }
-        if (this.callable == null) {
-            this.callable = () -> {
-                task.run();
-                return null;
-            };
-            CompletableFuture<Void> rs = new CompletableFuture<>();
-            this.resultFuture = rs;
-            return rs;
-        }
-        return null;
-    }
-
-    synchronized <T> CompletableFuture<T> submit(Callable<T> callable, CompletableFuture<T> completableFuture) {
-        if (this.terminated || !isAlive()) {
-            throw new IllegalStateException("MultipleReturnTaskThread terminated or not alive");
-        }
-        if (this.callable == null) {
-            this.callable = callable;
-            this.resultFuture = completableFuture;
-            return completableFuture;
-        }
-        return null;
-    }
-
-    synchronized CompletableFuture<Void> submit(Runnable task, CompletableFuture<Void> completableFuture) {
-        return submit(() -> {
+    public CompletableFuture<Void> submit(Runnable task) {
+        return this.submit(() -> {
             task.run();
             return null;
-        }, completableFuture);
+        });
     }
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     @Override
     public void run() {
-        while (!terminated && isAlive()) {
-            if (isInterrupted()) {
-                interrupt();
+        while (!terminated && !isInterrupted() && isAlive()) {
+            CallableTask task = taskQueue.poll();
+            if (task == null) {
+                continue;
             }
-            synchronized (this) {
-                try {
-                    resultFuture.complete(callable.call());
-                } catch (Exception e) {
-                    if (resultFuture != null) {
-                        resultFuture.completeExceptionally(e);
-                    }
-                } finally {
-                    this.callable = null;
-                    this.resultFuture = null;
+            try {
+                if (!task.getFuture().isCancelled()) {
+                    task.getFuture().complete(task.getCallable().call());
+                }
+            } catch (Exception e) {
+                if (!task.getFuture().isCancelled()) {
+                    task.getFuture().completeExceptionally(e);
                 }
             }
         }
